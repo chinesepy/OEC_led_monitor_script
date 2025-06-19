@@ -95,7 +95,6 @@ led_cyan() {
 check_network() {
     # 尝试ping多个服务器确保网络连接
     ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 || \
-    ping -c 1 -W 3 192.168.1.1 >/dev/null 2>&1 || \
     ping -c 1 -W 3 www.baidu.com >/dev/null 2>&1
 }
 
