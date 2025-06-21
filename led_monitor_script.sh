@@ -56,7 +56,7 @@ led_off() {
     set_led 0 0 0
 }
 
-# 蓝色（开机状态）
+# 蓝色（断网状态）
 led_blue() {
     set_led 0 0 1
 }
@@ -66,22 +66,22 @@ led_green() {
     set_led 0 1 0
 }
 
-# 黄色（断网）
+# 黄色（磁盘空间不足）
 led_yellow() {
     set_led 1 1 0
 }
 
-# 红色（磁盘空间不足）
+# 红色（CPU温度）
 led_red() {
     set_led 1 0 0
 }
 
-# 品红色（多种问题组合）
+# 品红色（内存高CPU负载高）
 led_magenta() {
     set_led 1 0 1
 }
 
-# 白色（系统启动）
+# 白色（内存过高）
 led_white() {
     set_led 1 1 1
 }
