@@ -1,16 +1,19 @@
 [Unit]
 Description=LED Status Monitor
-After=network.target
-Wants=network.target
+After=network-online.target docker.service
+Requires=docker.service
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/led_monitor.sh
-Restart=always
-RestartSec=10
+ExecStart=/usr/local/bin/led_monitor_script.sh
+Restart=on-failure
+RestartSec=5
 User=root
+
 StandardOutput=journal
 StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
+

@@ -1,219 +1,158 @@
 #!/bin/bash
 
-# LED控制脚本
+# LED控制脚本 - 优化版
 # 功能：根据系统状态控制三色LED指示灯
 
-# LED设备路径
-RED_LED="/sys/class/leds/red-led/brightness"
-GREEN_LED="/sys/class/leds/green-led/brightness"
-BLUE_LED="/sys/class/leds/blue-led/brightness"
-
 # 配置参数
-DISK_THRESHOLD=90          # 磁盘使用率阈值（%）
-MEMORY_THRESHOLD=90        # 内存使用率阈值（%）
-CPU_LOAD_THRESHOLD=4.0     # CPU负载阈值
-CPU_TEMP_THRESHOLD=80      # CPU温度阈值（°C）
-CHECK_INTERVAL=10          # 检查间隔（秒）
-NIGHT_START="21:30"        # 夜间关灯开始时间
-NIGHT_END="06:30"          # 夜间关灯结束时间
-
-# 日志文件
+LED_PATH="/sys/class/leds"
+THRESHOLDS=(90 90 4.0 80)  # 磁盘% 内存% CPU负载 CPU温度°C
+CHECK_INTERVAL=30          # 检查间隔（秒）
+NIGHT_HOURS="21:30-06:30"  # 夜间关灯时间
 LOG_FILE="/var/log/led_monitor.log"
-LOG_MAX_SIZE=1048576    # 日志文件最大大小（字节，默认1MB）
+LOG_MAX_SIZE=524288        # 日志文件最大512KB
 
-# 检查并限制日志文件大小
-check_log_size() {
-    if [ -f "$LOG_FILE" ]; then
-        local file_size=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+# 全局变量
+LAST_STATUS=""
+LAST_LOG_TIME=0
+LOG_INTERVAL=300           # 5分钟记录一次日志
+
+# 工具函数
+log_msg() {
+    local now=$(date +%s)
+    local msg="$1"
+    
+    # 只在状态变化或超过日志间隔时记录
+    if [[ "$msg" != "$LAST_STATUS" ]] || (( now - LAST_LOG_TIME > LOG_INTERVAL )); then
+        # 检查日志文件大小
+        [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $LOG_MAX_SIZE ]] && > "$LOG_FILE"
         
-        if [ "$file_size" -gt "$LOG_MAX_SIZE" ]; then
-            # 清空日志文件并写入重置信息
-            : > "$LOG_FILE"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Log file reset (previous size: $((file_size / 1024))KB)" >> "$LOG_FILE"
-        fi
+        echo "$(date '+%m-%d %H:%M:%S') - $msg" >> "$LOG_FILE"
+        LAST_LOG_TIME=$now
+        LAST_STATUS="$msg"
     fi
 }
 
-# 写入日志函数
-log_message() {
-    check_log_size
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+# LED控制
+set_led() { 
+    echo $1 > "$LED_PATH/red-led/brightness" 2>/dev/null
+    echo $2 > "$LED_PATH/green-led/brightness" 2>/dev/null  
+    echo $3 > "$LED_PATH/blue-led/brightness" 2>/dev/null
 }
 
-# LED控制函数
-set_led() {
-    local red=$1
-    local green=$2
-    local blue=$3
-    
-    echo $red > "$RED_LED" 2>/dev/null
-    echo $green > "$GREEN_LED" 2>/dev/null
-    echo $blue > "$BLUE_LED" 2>/dev/null
-}
-
-# 关闭所有LED
-led_off() {
-    set_led 0 0 0
-}
-
-# 蓝色（断网状态）
-led_blue() {
-    set_led 0 0 1
-}
-
-# 绿色（正常联网）
-led_green() {
-    set_led 0 1 0
-}
-
-# 黄色（磁盘空间不足）
-led_yellow() {
-    set_led 1 1 0
-}
-
-# 红色（CPU温度）
-led_red() {
-    set_led 1 0 0
-}
-
-# 品红色（内存高CPU负载高）
-led_magenta() {
-    set_led 1 0 1
-}
-
-# 白色（内存过高）
-led_white() {
-    set_led 1 1 1
-}
-
-# 青色（CPU相关问题）
-led_cyan() {
-    set_led 0 1 1
-}
-
-# 检查网络连接
-check_network() {
-    # 尝试ping多个服务器确保网络连接
-    ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 || \
-    ping -c 1 -W 3 www.baidu.com >/dev/null 2>&1
-}
-
-# 检查CPU温度
-check_cpu_temp() {
-    local temp_file="/sys/class/thermal/thermal_zone0/temp"
-    if [ -f "$temp_file" ]; then
-        local temp=$(cat "$temp_file")
-        # 转换为摄氏度（通常是毫度）
-        temp=$((temp / 1000))
-        [ $temp -ge $CPU_TEMP_THRESHOLD ]
-    else
-        # 如果无法读取温度，返回false
-        return 1
-    fi
-}
-
-# 检查CPU负载
-check_cpu_load() {
-    local load=$(uptime | awk -F'load average:' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
-    # 使用bc进行浮点数比较，如果没有bc则用整数比较
-    if command -v bc >/dev/null 2>&1; then
-        echo "$load >= $CPU_LOAD_THRESHOLD" | bc -l | grep -q 1
-    else
-        # 简单的整数比较（取整）
-        local load_int=${load%.*}
-        local threshold_int=${CPU_LOAD_THRESHOLD%.*}
-        [ $load_int -ge $threshold_int ]
-    fi
-}
-
-# 检查磁盘使用率
-check_disk_usage() {
-    local usage=$(df / | awk 'NR==2 {print int($5)}')
-    [ $usage -ge $DISK_THRESHOLD ]
-}
-
-# 检查内存使用率
-check_memory_usage() {
-    local total=$(free | awk '/^Mem:/ {print $2}')
-    local used=$(free | awk '/^Mem:/ {print $3}')
-    local usage=$(( used * 100 / total ))
-    [ $usage -ge $MEMORY_THRESHOLD ]
-}
-
-# 检查是否在夜间时段
-is_night_time() {
-    local current_time=$(date +%H:%M)
-    local night_start=$(date -d "$NIGHT_START" +%H%M)
-    local night_end=$(date -d "$NIGHT_END" +%H%M)
-    local current_time_num=$(date -d "$current_time" +%H%M)
-    
-    # 处理跨日情况
-    if [ $night_start -gt $night_end ]; then
-        # 跨日：21:30 到次日 06:30
-        [ $current_time_num -ge $night_start ] || [ $current_time_num -le $night_end ]
-    else
-        # 同日：不太可能，但防止配置错误
-        [ $current_time_num -ge $night_start ] && [ $current_time_num -le $night_end ]
-    fi
-}
-
-# 获取系统状态并设置相应LED
-update_led_status() {
-    # 夜间关灯
-    if is_night_time; then
-        led_off
+# 系统检查函数 - 返回状态码和详细信息
+check_system() {
+    # 网络检查（最轻量）
+    if ! ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; then
+        echo "1:"
         return
     fi
     
-    # 检查各种状态
-    local cpu_temp_high=$(check_cpu_temp && echo "1" || echo "0")
-    local cpu_load_high=$(check_cpu_load && echo "1" || echo "0")
-    local memory_high=$(check_memory_usage && echo "1" || echo "0")
-    local disk_high=$(check_disk_usage && echo "1" || echo "0")
-    local network_ok=$(check_network && echo "1" || echo "0")
+    # 磁盘使用率
+    disk=$(df / | awk 'NR==2{print int($5)}')
+    if (( disk >= ${THRESHOLDS[0]} )); then
+        echo "2:$disk"
+        return
+    fi
     
-    # 状态优先级判断
-    if [ "$cpu_temp_high" = "1" ]; then
-        led_red
-        log_message "CPU temperature critical (>$CPU_TEMP_THRESHOLD°C) - LED: Red"
-    elif [ "$memory_high" = "1" ] && [ "$cpu_load_high" = "1" ]; then
-        led_magenta
-        log_message "Memory high (>$MEMORY_THRESHOLD%) + CPU load high (>$CPU_LOAD_THRESHOLD) - LED: Magenta"
-    elif [ "$cpu_load_high" = "1" ]; then
-        led_cyan
-        log_message "CPU load high (>$CPU_LOAD_THRESHOLD) - LED: Cyan"
-    elif [ "$memory_high" = "1" ]; then
-        led_white
-        log_message "Memory usage high (>$MEMORY_THRESHOLD%) - LED: White"
-    elif [ "$disk_high" = "1" ]; then
-        led_yellow
-        log_message "Disk usage high (>$DISK_THRESHOLD%) - LED: Yellow"
-    elif [ "$network_ok" = "0" ]; then
-        led_blue
-        log_message "Network disconnected - LED: Blue"
+    # 内存使用率
+    mem=$(free | awk '/Mem:/{printf "%.0f", $3/$2*100}')
+    if (( mem >= ${THRESHOLDS[1]} )); then
+        # 同时检查CPU负载以确定是否为组合状态
+        load=$(uptime | awk -F'load average:' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+        if awk "BEGIN{exit !($load >= ${THRESHOLDS[2]})}"; then
+            echo "4:$mem,$load"  # 内存+CPU高
+        else
+            echo "3:$mem"       # 仅内存高
+        fi
+        return
+    fi
+    
+    # CPU负载检查
+    load=$(uptime | awk -F'load average:' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    if awk "BEGIN{exit !($load >= ${THRESHOLDS[2]})}"; then
+        echo "5:$load"
+        return
+    fi
+    
+    # CPU温度 - 增加合理性检查
+    local temp_file="/sys/class/thermal/thermal_zone0/temp"
+    if [[ -f "$temp_file" ]]; then
+        local temp_raw=$(cat "$temp_file" 2>/dev/null || echo "0")
+        temp=$(( temp_raw / 1000 ))
+        # 温度合理性检查：0-120°C范围内才有效
+        if (( temp > 0 && temp <= 120 && temp >= ${THRESHOLDS[3]} )); then
+            echo "6:$temp"
+            return
+        fi
+    fi
+    
+    # 正常状态
+    echo "0:"
+}
+
+# 夜间模式检查 - 兼容BusyBox，正确处理跨日逻辑
+is_night() {
+    local current=$(date +%H%M)
+    local start_time="${NIGHT_HOURS%-*}"
+    local end_time="${NIGHT_HOURS#*-}"
+    
+    # 手动解析时间，兼容BusyBox
+    local start=$(echo "$start_time" | sed 's/://')
+    local end=$(echo "$end_time" | sed 's/://')
+    
+    # 判断是否跨日
+    if (( start > end )); then
+        # 跨日情况：如21:30-06:30
+        (( current >= start || current <= end ))
     else
-        led_green
-        log_message "System normal - LED: Green"
+        # 同日情况：如22:00-23:00
+        (( current >= start && current <= end ))
     fi
 }
 
-# 初始化：显示蓝色（开机状态）
-led_blue
-log_message "System boot - LED: Blue"
+# 主状态更新
+update_status() {
+    is_night && { set_led 0 0 0; return; }
+    
+    # 获取系统状态和详细信息
+    local result=$(check_system)
+    local status_code="${result%%:*}"
+    local details="${result#*:}"
+    
+    case $status_code in
+        0) set_led 0 1 0; log_msg "Normal";;
+        1) set_led 0 0 1; log_msg "Network down";;
+        2) set_led 1 1 0; log_msg "Disk high(${details}%)";;
+        3) set_led 1 1 1; log_msg "Memory high(${details}%)";;
+        4) IFS=',' read -r mem_val load_val <<< "$details"
+           set_led 1 0 1; log_msg "Memory+CPU high(${mem_val}%,${load_val})";;
+        5) set_led 0 1 1; log_msg "CPU load high(${details})";;
+        6) set_led 1 0 0; log_msg "CPU temp high(${details}°C)";;
+    esac
+}
 
-# 等待网络就绪（最多等待60秒）
-echo "Waiting for network connection..."
-for i in {1..12}; do
-    if check_network; then
-        echo "Network connected!"
-        break
-    fi
-    sleep 5
-done
+# 主程序
+main() {
+    # 初始化
+    set_led 0 0 1
+    log_msg "Boot - waiting network"
+    
+    # 等待网络（最多60秒）
+    for i in {1..12}; do
+        ping -c1 -W2 8.8.8.8 >/dev/null 2>&1 && break
+        sleep 5
+    done
+    
+    echo "LED monitor started (PID: $$)"
+    
+    # 主循环
+    while true; do
+        update_status
+        sleep $CHECK_INTERVAL
+    done
+}
 
-# 主循环
-echo "LED monitor started. Log file: $LOG_FILE"
-while true; do
-    update_led_status
-    sleep $CHECK_INTERVAL
-done
+# 信号处理
+trap 'set_led 1 1 1; log_msg "Stopped"; exit 0' INT TERM
+
+main "$@"
