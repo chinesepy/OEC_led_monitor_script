@@ -134,7 +134,7 @@ update_status() {
 # 主程序
 main() {
     # 初始化
-    set_led 0 0 1
+    set_led 1 1 1
     log_msg "Boot - waiting network"
     
     # 等待网络（最多60秒）
