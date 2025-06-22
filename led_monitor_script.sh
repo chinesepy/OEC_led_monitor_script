@@ -135,7 +135,7 @@ update_status() {
 main() {
     # 初始化
     set_led 1 1 1
-    log_msg "Boot - waiting network"
+    log_msg "Boot"
     
     # 等待网络（最多60秒）
     for i in {1..12}; do
